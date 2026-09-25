@@ -1,0 +1,118 @@
+--Create Database and Schema
+CREATE DATABASE ECOMMERCE_DEMO;
+CREATE SCHEMA RAW;
+
+--Switch to our Database and Schema
+USE DATABASE ECOMMERCE_DEMO;
+USE SCHEMA RAW;
+
+
+--Create table
+CREATE TABLE SALES_RAW(
+    DATE_TEXT STRING,
+    SALES_TEXT STRING
+);
+
+--Create File Format
+CREATE OR REPLACE FILE FORMAT SALE_CSV_FORMAT
+    TYPE = 'CSV'
+    FIELD_OPTIONALLY_ENCLOSED_BY = '"'
+    FIELD_DELIMITER = ','
+    SKIP_HEADER = 1
+    NULL_IF = ('NULL','null','');
+
+DESC FILE FORMAT SALE_CSV_FORMAT
+
+--Create External Stage
+--Create Storage Integration (Which is External Stage)
+CREATE OR REPLACE STORAGE INTEGRATION AWS_S3_INTEGRATION
+    TYPE = EXTERNAL_STAGE
+    STORAGE_PROVIDER = 'S3' 
+    ENABLED = TRUE
+    STORAGE_AWS_ROLE_ARN = 'arn:aws:iam::651023585555:role/snowflake_s3_demo_role'
+    STORAGE_ALLOWED_LOCATIONS = ('s3://snowflake-s3-demo-bucket')
+    COMMENT = 'Integration with AWS';
+
+
+DESC INTEGRATION AWS_S3_INTEGRATION
+SHOW INTEGRATIONS
+
+--Grant Permission to accountadmin
+GRANT USAGE ON INTEGRATION AWS_S3_INTEGRATION TO ROLE ACCOUNTADMIN;
+GRANT USAGE ON STAGE AWS_STAGE TO ROLE ACCOUNTADMIN;
+
+--Create stage
+CREATE OR REPLACE STAGE AWS_STAGE
+    URL = 's3://snowflake-s3-demo-bucket'
+    STORAGE_INTEGRATION = AWS_S3_INTEGRATION
+    FILE_FORMAT = 'SALE_CSV_FORMAT';
+
+LIST @AWS_STAGE;
+
+
+--Copy the data from stage to table
+COPY INTO SALES_RAW
+FROM @AWS_STAGE/daily_sales.csv
+FILE_FORMAT = 'SALE_CSV_FORMAT'
+ON_ERROR = 'CONTINUE';
+
+--SELECT * FROM SALES_RAW
+
+-- Include metadata about the file
+SELECT 
+    METADATA$FILENAME AS file_name,
+    METADATA$FILE_ROW_NUMBER AS row_number,
+    $1 AS column1,
+    $2 AS column2
+FROM @AWS_STAGE
+WHERE $1 <> 'date'
+
+
+--Create Stream
+CREATE STREAM SALES_STREAM
+    ON TABLE SALES_RAW;
+
+/*
+--To check the Stream capture or not
+INSERT INTO SALES_RAW VALUES ('2025-12-06','3200');
+select * from SALES_STREAM
+select * from sales_raw
+delete from sales_raw where date_text = '2025-13-06'
+*/
+
+--Create Target table(Main Table)
+CREATE TABLE SALES_CLEAN(
+    SALE_DATE DATE,
+    SALE_AMOUNT NUMBER
+);
+
+--Create Task(Job), which run on the specific time
+CREATE TASK SALES_MERGE_TASK
+    WAREHOUSE = COMPUTE_WH
+    SCHEDULE = '1 minute'
+AS 
+    MERGE INTO SALES_CLEAN TGT 
+    USING (
+        SELECT 
+            CAST(DATE_TEXT AS DATE) AS SALE_DATE,
+            CAST(SALES_TEXT AS NUMBER) AS SALE_AMOUNT,
+            METADATA$ACTION AS ACTION
+        FROM SALES_STREAM
+    ) SRC 
+    ON TGT.SALE_DATE = SRC.SALE_DATE
+    WHEN MATCHED AND SRC.ACTION = 'DELETE' THEN 
+        DELETE
+    WHEN MATCHED AND SRC.ACTION = 'UPDATE' THEN 
+        UPDATE SET TGT.SALE_AMOUNT = SRC.SALE_AMOUNT
+    WHEN NOT MATCHED AND SRC.ACTION = 'INSERT' THEN
+        INSERT (SALE_DATE,SALE_AMOUNT)
+        VALUES(SRC.SALE_DATE,SRC.SALE_AMOUNT);
+        
+
+ALTER TASK SALES_MERGE_TASK RESUME;
+
+SELECT * FROM SALES_CLEAN
+
+--Time Travel Demo
+CREATE TABLE SALES_CLEAN_RESTORE CLONE SALES_CLEAN
+BEFORE (STATEMENT => 'pass your query id');
