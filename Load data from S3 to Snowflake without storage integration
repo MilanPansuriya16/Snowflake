@@ -1,13 +1,13 @@
 --s3 bucket name : s3://snowflake-s3-bucket-test-demo
---Access key = AKIAZPFAHSEJWQ2H4DX5
---Secret Access key = Ygk7alOoFacsWb6a4Pqjs32XcvOZJmYvFqPMFZvr
+--Access key = 
+--Secret Access key = 
 
 --Create External Stage
 CREATE OR REPLACE STAGE TEST_STAGE_DIRECT
 URL='s3://snowflake-s3-demo-bucket/'
 CREDENTIALS=(
-    AWS_KEY_ID='AKIAZPFAHSEJWQ2H4DX5'
-    AWS_SECRET_KEY='Ygk7alOoFacsWb6a4Pqjs32XcvOZJmYvFqPMFZvr'
+    AWS_KEY_ID=''
+    AWS_SECRET_KEY=''
 );
 
 LIST @TEST_STAGE_DIRECT
