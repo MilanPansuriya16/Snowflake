@@ -1,0 +1,75 @@
+--s3 bucket name : s3://snowflake-s3-bucket-test-demo
+--Access key = AKIAZPFAHSEJWQ2H4DX5
+--Secret Access key = Ygk7alOoFacsWb6a4Pqjs32XcvOZJmYvFqPMFZvr
+
+--Create External Stage
+CREATE OR REPLACE STAGE TEST_STAGE_DIRECT
+URL='s3://snowflake-s3-demo-bucket/'
+CREDENTIALS=(
+    AWS_KEY_ID='AKIAZPFAHSEJWQ2H4DX5'
+    AWS_SECRET_KEY='Ygk7alOoFacsWb6a4Pqjs32XcvOZJmYvFqPMFZvr'
+);
+
+LIST @TEST_STAGE_DIRECT
+
+--Select query
+ SELECT 
+    $1 AS column1,
+    $2 AS column2
+FROM @TEST_STAGE_DIRECT/daily_sales.csv
+WHERE $1 <> 'date'
+
+--Copy the data from stage to table
+COPY INTO SALES_RAW
+FROM @TEST_STAGE_DIRECT/daily_sales.csv
+FILE_FORMAT = 'SALE_CSV_FORMAT'
+ON_ERROR = 'CONTINUE';
+
+SELECT * FROM SALES_RAW
+
+-- Include metadata about the file
+SELECT 
+    METADATA$FILENAME AS file_name,
+    METADATA$FILE_ROW_NUMBER AS row_number,
+    $1 AS column1,
+    $2 AS column2
+FROM @TEST_STAGE_DIRECT
+WHERE $1 <> 'date'
+
+
+--Create Stream
+CREATE STREAM SALES_STREAM
+    ON TABLE SALES_RAW;
+
+--To check the Stream capture or not
+INSERT INTO SALES_RAW VALUES ('2025-12-06','3100');
+select * from SALES_STREAM
+select * from sales_raw
+delete from sales_raw where date_text = '2025-12-06'
+
+CREATE TABLE SALES_CLEAN(
+    SALE_DATE DATE,
+    SALE_AMOUNT NUMBER
+);
+
+CREATE TASK SALES_MERGE_TASK
+    WAREHOUSE = COMPUTE_WH
+    SCHEDULE = '1 minute'
+AS 
+    MERGE INTO SALES_CLEAN TGT 
+    USING (
+        SELECT 
+            CAST(DATE_TEXT AS DATE) AS SALE_DATE,
+            CAST(SALES_TEXT AS NUMBER) AS SALE_AMOUNT,
+            METADATA$ACTION AS ACTION
+        FROM SALES_STREAM
+    ) SRC 
+    ON TGT.SALE_DATE = SRC.SALE_DATE
+    WHEN MATCHED AND SRC.ACTION = 'DELETE' THEN 
+        DELETE
+    WHEN MATCHED AND SRC.ACTION = 'UPDATE' THEN 
+        UPDATE SET TGT.SALE_AMOUNT = SRC.SALE_AMOUNT
+    WHEN NOT MATCHED AND SRC.ACTION = 'INSERT' THEN
+        INSERT (SALE_DATE,SALE_AMOUNT)
+        VALUE(SRC.SALE_DATE,SRC.SALE_AMOUNT);
+        
